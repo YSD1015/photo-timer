@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>即売会タイマー</title>
+<style>
+body{margin:0;background:#111;color:#fff;font-family:sans-serif;display:flex;justify-content:center;min-height:100vh}
+.container{width:100%;max-width:420px;padding:20px;box-sizing:border-box;text-align:center}
+.pickers{display:flex;justify-content:center;gap:25px;margin:10px 0 25px}
+.pickerWrap{width:120px}.label{font-size:18px;margin-bottom:8px}
+select{width:100%;height:180px;font-size:32px;background:#222;color:#fff;border:2px solid #555;border-radius:12px}
+.timer{font-size:82px;font-weight:bold;margin:25px 0;color:#fff}
+.warning{color:#ffd400}.danger{color:#ff4444;animation:blink 1s infinite}
+@keyframes blink{50%{opacity:.3}}
+button{width:100%;padding:18px;margin:8px 0;font-size:28px;border:none;border-radius:14px;color:#fff}
+#startBtn{background:#28a745} #pauseBtn{background:#ff9800} #resetBtn{background:#666}
+.status{margin-top:15px;font-size:20px;color:#ccc}
+</style>
+</head>
+<body>
+<div class="container">
+<div class="pickers">
+<div class="pickerWrap"><div class="label">分</div><select id="minutes" size="5"></select></div>
+<div class="pickerWrap"><div class="label">秒</div><select id="seconds" size="5"></select></div>
+</div>
+<div id="timerDisplay" class="timer">03:00</div>
+<button id="startBtn">スタート</button>
+<button id="pauseBtn">一時停止</button>
+<button id="resetBtn">リセット</button>
+<div id="status" class="status">状態：停止中</div>
+</div>
+<script>
+const minSel=minutes, secSel=seconds, display=timerDisplay, statusEl=status;
+const pauseBtn=document.getElementById('pauseBtn');
+let timer=null,endTime=0,remainSec=180,paused=false,lastSpoken=new Set();
+let wakeLock=null, alarmCtx=null, alarmTimeout=null, initialTotal=180;
+
+for(let i=0;i<=99;i++){let o=new Option(String(i).padStart(2,'0'),i); if(i===3)o.selected=true; minSel.add(o);}
+for(let i=0;i<=59;i++) secSel.add(new Option(String(i).padStart(2,'0'),i));
+
+function format(s){s=Math.max(0,Math.ceil(s)); return String(Math.floor(s/60)).padStart(2,'0')+":"+String(s%60).padStart(2,'0');}
+
+function updateDisplay(sec){
+ display.textContent=format(sec);
+ display.className="timer";
+ if(timer){
+   if(sec<=30) display.classList.add("warning");
+   if(sec<=5) display.classList.add("danger");
+ }
+}
+
+function speak(text){
+ const synth=window.speechSynthesis;
+ const u=new SpeechSynthesisUtterance(text);
+ u.lang='ja-JP';
+ u.pitch=1.3;
+ u.rate=1.05;
+ synth.speak(u);
+}
+
+async function requestWakeLock(){try{if('wakeLock' in navigator) wakeLock=await navigator.wakeLock.request('screen');}catch(e){}}
+async function releaseWakeLock(){if(wakeLock){await wakeLock.release(); wakeLock=null;}}
+
+function stopAlarm(){
+ if(alarmTimeout){clearTimeout(alarmTimeout); alarmTimeout=null;}
+ if(alarmCtx){alarmCtx.close(); alarmCtx=null;}
+}
+
+function kitchenAlarm(){
+ stopAlarm();
+ alarmCtx=new(window.AudioContext||window.webkitAudioContext)();
+ let t=alarmCtx.currentTime;
+ for(let g=0; g<15; g++){
+   for(let i=0;i<4;i++){
+      let osc=alarmCtx.createOscillator(), gain=alarmCtx.createGain();
+      osc.frequency.value=1400;
+      osc.type='square';
+      osc.connect(gain); gain.connect(alarmCtx.destination);
+      let st=t+(g*0.32)+(i*0.07);
+      gain.gain.setValueAtTime(0.35,st);
+      gain.gain.exponentialRampToValueAtTime(0.001,st+0.05);
+      osc.start(st); osc.stop(st+0.05);
+   }
+ }
+ alarmTimeout=setTimeout(stopAlarm,5000);
+}
+
+function checkVoice(sec){
+ if(lastSpoken.has(sec)) return;
+ if(initialTotal>=90 && sec===60){speak("1分前");}
+ else if(sec===30){speak("30秒前");}
+ else if(sec===10){speak("10秒前");}
+ else if(sec===5){speak("ごー");}
+ else if(sec===4){speak("よん");}
+ else if(sec===3){speak("さん");}
+ else if(sec===2){speak("にー");}
+ else if(sec===1){speak("いち");}
+ else return;
+ lastSpoken.add(sec);
+}
+
+function tick(){
+ remainSec=(endTime-Date.now())/1000;
+ const s=Math.ceil(remainSec);
+ updateDisplay(s);
+ checkVoice(s);
+ if(remainSec<=0){
+   clearInterval(timer); timer=null;
+   updateDisplay(0);
+   kitchenAlarm();
+   statusEl.textContent="状態：終了";
+   releaseWakeLock();
+ }
+}
+
+function stopAllSounds(){window.speechSynthesis.cancel(); stopAlarm();}
+
+startBtn.onclick=()=>{
+ stopAllSounds();
+ if(timer) return;
+ initialTotal=+minSel.value*60 + +secSel.value;
+ if(initialTotal<=0) return;
+ remainSec=initialTotal; lastSpoken.clear();
+ endTime=Date.now()+remainSec*1000;
+ timer=setInterval(tick,250);
+ statusEl.textContent="状態：動作中";
+ pauseBtn.textContent="一時停止"; paused=false;
+ updateDisplay(remainSec); requestWakeLock();
+};
+
+pauseBtn.onclick=()=>{
+ stopAllSounds();
+ if(!timer && !paused) return;
+ if(timer){
+   clearInterval(timer); timer=null; paused=true;
+   pauseBtn.textContent="再開"; statusEl.textContent="状態：一時停止中";
+ }else{
+   endTime=Date.now()+remainSec*1000;
+   timer=setInterval(tick,250); paused=false;
+   pauseBtn.textContent="一時停止"; statusEl.textContent="状態：動作中";
+ }
+ updateDisplay(remainSec);
+};
+
+resetBtn.onclick=()=>{
+ stopAllSounds();
+ clearInterval(timer); timer=null; paused=false;
+ pauseBtn.textContent="一時停止";
+ remainSec=+minSel.value*60 + +secSel.value;
+ updateDisplay(remainSec);
+ statusEl.textContent="状態：停止中";
+ lastSpoken.clear(); releaseWakeLock();
+};
+
+minSel.onchange=secSel.onchange=()=>{if(!timer&&!paused){remainSec=+minSel.value*60 + +secSel.value; updateDisplay(remainSec);}};
+updateDisplay(180);
+</script>
+</body></html>
