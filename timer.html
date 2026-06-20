@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>撮影用タイマー</title>
+
+<style>
+body{
+    background:#111;
+    color:#fff;
+    font-family:sans-serif;
+    margin:0;
+    padding:15px;
+}
+
+.container{
+    max-width:1000px;
+    margin:auto;
+}
+
+h1{
+    text-align:center;
+}
+
+input{
+    background:#222;
+    color:white;
+    border:1px solid #555;
+    padding:8px;
+    font-size:18px;
+    width:130px;
+}
+
+button{
+    font-size:18px;
+    padding:12px;
+    margin:5px;
+}
+
+.mainTimer{
+    text-align:center;
+    font-size:90px;
+    font-weight:bold;
+    margin-top:20px;
+}
+
+.elapsed{
+    text-align:center;
+    font-size:32px;
+    color:#aaa;
+}
+
+.clock{
+    text-align:center;
+    font-size:28px;
+    margin-bottom:20px;
+}
+
+.controls{
+    text-align:center;
+    margin:20px 0;
+}
+
+.notifyGrid{
+    display:grid;
+    grid-template-columns: repeat(auto-fill,minmax(150px,1fr));
+    gap:10px;
+}
+
+.notifyList{
+    margin-top:20px;
+    border-top:1px solid #444;
+    padding-top:15px;
+}
+
+.done{
+    color:#55ff55;
+}
+
+.pending{
+    color:#ccc;
+}
+
+@media (max-width:700px){
+    .mainTimer{
+        font-size:60px;
+    }
+
+    .elapsed{
+        font-size:24px;
+    }
+
+    .clock{
+        font-size:22px;
+    }
+}
+</style>
+</head>
+
+<body>
+
+<div class="container">
+
+<h1>撮影用タイマー</h1>
+
+<div class="clock" id="clock"></div>
+
+<div>
+総時間(HH:MM:SS)
+<input id="totalTime" value="00:50:00">
+</div>
+
+<h3>通知時刻（経過時間）</h3>
+
+<div class="notifyGrid" id="notifyGrid"></div>
+
+<div class="controls">
+<button onclick="startTimer()">スタート</button>
+<button onclick="pauseTimer()">一時停止</button>
+<button onclick="resumeTimer()">再開</button>
+<button onclick="stopTimer()">停止</button>
+<button onclick="resetTimer()">リセット</button>
+</div>
+
+<div class="mainTimer" id="remaining">00:50:00</div>
+<div class="elapsed" id="elapsed">経過 00:00:00</div>
+
+<div class="notifyList">
+<h3>通知予定</h3>
+<div id="schedule"></div>
+</div>
+
+</div>
+
+<script>
+
+const notifyGrid = document.getElementById("notifyGrid");
+
+for(let i=0;i<20;i++){
+    let inp=document.createElement("input");
+    inp.value="00:00:00";
+    inp.id="notify"+i;
+    inp.addEventListener("change",saveSettings);
+    notifyGrid.appendChild(inp);
+}
+
+let timer=null;
+let endTime=null;
+let totalSeconds=0;
+let paused=false;
+let remainingWhenPaused=0;
+let notified=new Set();
+let wakeLock=null;
+
+function saveSettings(){
+    localStorage.setItem("totalTime",
+        document.getElementById("totalTime").value);
+
+    let arr=[];
+    for(let i=0;i<20;i++){
+        arr.push(document.getElementById("notify"+i).value);
+    }
+
+    localStorage.setItem("notifyTimes",JSON.stringify(arr));
+
+    updateSchedule();
+}
+
+function loadSettings(){
+
+    let t=localStorage.getItem("totalTime");
+    if(t) document.getElementById("totalTime").value=t;
+
+    let arr=JSON.parse(localStorage.getItem("notifyTimes")||"[]");
+
+    arr.forEach((v,i)=>{
+        if(document.getElementById("notify"+i))
+            document.getElementById("notify"+i).value=v;
+    });
+
+    updateDisplay(parseTime(document.getElementById("totalTime").value));
+    updateSchedule();
+}
+
+document.getElementById("totalTime").addEventListener("change",saveSettings);
+
+function parseTime(str){
+    let p=str.split(":").map(Number);
+    if(p.length!==3)return 0;
+    return p[0]*3600+p[1]*60+p[2];
+}
+
+function formatTime(sec){
+    sec=Math.max(0,Math.floor(sec));
+
+    let h=Math.floor(sec/3600);
+    let m=Math.floor((sec%3600)/60);
+    let s=sec%60;
+
+    return String(h).padStart(2,'0')+":"
+         + String(m).padStart(2,'0')+":"
+         + String(s).padStart(2,'0');
+}
+
+function startTimer(){
+
+    stopTimer();
+
+    totalSeconds=parseTime(
+        document.getElementById("totalTime").value);
+
+    if(totalSeconds<=0) return;
+
+    notified.clear();
+
+    endTime=Date.now()+totalSeconds*1000;
+
+    timer=setInterval(updateTimer,200);
+
+    requestWakeLock();
+
+    updateSchedule();
+}
+
+function updateTimer(){
+
+    let remain=(endTime-Date.now())/1000;
+    let elapsed=totalSeconds-remain;
+
+    updateDisplay(remain,elapsed);
+
+    checkNotifications(elapsed);
+
+    if(remain<=0){
+        finishTimer();
+    }
+}
+
+function updateDisplay(remain,elapsed=0){
+    document.getElementById("remaining").textContent=
+        formatTime(remain);
+
+    document.getElementById("elapsed").textContent=
+        "経過 "+formatTime(elapsed);
+}
+
+function checkNotifications(elapsed){
+
+    for(let i=0;i<20;i++){
+
+        let t=parseTime(
+            document.getElementById("notify"+i).value);
+
+        if(t===0) continue;
+
+        if(!notified.has(i) && elapsed>=t){
+            beep();
+            notified.add(i);
+            updateSchedule();
+        }
+    }
+}
+
+function beep(){
+
+    let ctx=new(window.AudioContext||window.webkitAudioContext)();
+
+    let osc=ctx.createOscillator();
+    let gain=ctx.createGain();
+
+    osc.frequency.value=1000;
+
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+
+    osc.start();
+
+    gain.gain.setValueAtTime(0.3,ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(
+        0.001,ctx.currentTime+0.15);
+
+    osc.stop(ctx.currentTime+0.15);
+}
+
+function finishSound(){
+
+    let ctx=new(window.AudioContext||window.webkitAudioContext)();
+
+    [0,0.3,0.6,1.0].forEach((t,index)=>{
+
+        let osc=ctx.createOscillator();
+        let gain=ctx.createGain();
+
+        osc.frequency.value= index<3 ? 1000 : 700;
+
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+
+        osc.start(ctx.currentTime+t);
+
+        gain.gain.setValueAtTime(
+            0.3,ctx.currentTime+t);
+
+        gain.gain.exponentialRampToValueAtTime(
+            0.001,ctx.currentTime+t+0.25);
+
+        osc.stop(ctx.currentTime+t+0.25);
+    });
+}
+
+function finishTimer(){
+    clearInterval(timer);
+    timer=null;
+    updateDisplay(0,totalSeconds);
+    finishSound();
+    releaseWakeLock();
+}
+
+function pauseTimer(){
+    if(!timer) return;
+
+    remainingWhenPaused=(endTime-Date.now())/1000;
+
+    clearInterval(timer);
+    timer=null;
+}
+
+function resumeTimer(){
+
+    if(timer || remainingWhenPaused<=0) return;
+
+    endTime=Date.now()+remainingWhenPaused*1000;
+
+    timer=setInterval(updateTimer,200);
+}
+
+function stopTimer(){
+    clearInterval(timer);
+    timer=null;
+    releaseWakeLock();
+}
+
+function resetTimer(){
+
+    stopTimer();
+
+    remainingWhenPaused=0;
+    notified.clear();
+
+    updateDisplay(
+        parseTime(document.getElementById("totalTime").value),0);
+
+    updateSchedule();
+}
+
+function updateSchedule(){
+
+    let html="";
+
+    for(let i=0;i<20;i++){
+
+        let v=document.getElementById("notify"+i).value;
+
+        if(v==="00:00:00") continue;
+
+        html += `<div class="${
+            notified.has(i) ? 'done':'pending'
+        }">
+        ${notified.has(i) ? '✓':'□'} ${v}
+        </div>`;
+    }
+
+    document.getElementById("schedule").innerHTML=html;
+}
+
+setInterval(()=>{
+    let now=new Date();
+    document.getElementById("clock").textContent=
+        now.toLocaleTimeString('ja-JP');
+},1000);
+
+async function requestWakeLock(){
+
+    try{
+        if('wakeLock' in navigator){
+            wakeLock=await navigator.wakeLock.request('screen');
+        }
+    }catch(e){
+        console.log("WakeLock非対応");
+    }
+}
+
+async function releaseWakeLock(){
+    if(wakeLock){
+        await wakeLock.release();
+        wakeLock=null;
+    }
+}
+
+loadSettings();
+
+</script>
+
+</body>
+</html>
+
