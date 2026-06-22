@@ -8,9 +8,18 @@ button{width:100%;padding:18px;margin:8px 0;font-size:28px;border:none;border-ra
 </style></head><body><div class='c'><div class='p'><div class='w'><div>分</div><select id='m' size='5'></select></div><div class='w'><div>秒</div><select id='sec' size='5'></select></div></div><div id='t'>03:00</div><button id='start'>スタート</button><button id='pause'>一時停止</button><button id='reset'>リセット</button><div id='s'>状態：停止中</div></div>
 <script>
 for(let i=0;i<=99;i++)m.add(new Option(String(i).padStart(2,'0'),i,i==3,i==3));
-for(let i=0;i<=59;i++)sec.add(new Option(String(i).padStart(2,'0'),i));
+for(let i=0;i<=59;i++){
+    sec.add(
+        new Option(
+            String(i).padStart(2,'0'),
+            i,
+            i===0,
+            i===0
+        )
+    );
+}
 let timer=null,end=0,remain=180,paused=false,total=180,last=new Set(),wake=null;
-const alarmAudio=new Audio('Kitchen_Timer.mp3'); alarmAudio.preload='auto'; const st=s;
+let alarmAudio=null; const st=s;
 function fmt(x){x=Math.max(0,Math.ceil(x));return String(Math.floor(x/60)).padStart(2,'0')+':'+String(x%60).padStart(2,'0')}
 function draw(x){t.textContent=fmt(x);t.className='';if(timer){t.classList.add('run');if(x<=5)t.classList.add('danger');}}
 async function initAudio(){try{speechSynthesis.getVoices();let u=new SpeechSynthesisUtterance(' ');u.volume=0;speechSynthesis.speak(u);}catch(e){}}
@@ -30,7 +39,22 @@ else if(x===1)speak('いち');
 else return; last.add(x);}
 function tick(){remain=(end-Date.now())/1000;let x=Math.ceil(remain);draw(x);voiceCheck(x);
 if(remain<=0){clearInterval(timer);timer=null;draw(0);st.textContent='状態：終了';alarmAudio.play().catch(()=>{});wlOff();}}
-start.onclick=async()=>{stopSounds();await initAudio();if(timer)return;total=(+m.value*60)+(+sec.value);if(total<=0)return;remain=total;last.clear();end=Date.now()+remain*1000;timer=setInterval(tick,250);paused=false;pause.textContent='一時停止';st.textContent='状態：動作中';draw(remain);wlOn();};
+start.onclick=async()=>{stopSounds();await initAudio();if(!alarmAudio){
+    alarmAudio = new Audio('Kitchen_Timer.mp3');
+    alarmAudio.preload = 'auto';
+
+    try{
+        alarmAudio.volume = 0;
+
+        await alarmAudio.play();
+
+        alarmAudio.pause();
+        alarmAudio.currentTime = 0;
+        alarmAudio.volume = 1;
+    }catch(e){
+        console.log(e);
+    }
+};if(timer)return;total=(+m.value*60)+(+sec.value);if(total<=0)return;remain=total;last.clear();end=Date.now()+remain*1000;timer=setInterval(tick,250);paused=false;pause.textContent='一時停止';st.textContent='状態：動作中';draw(remain);wlOn();};
 pause.onclick=()=>{stopSounds();if(!timer&&!paused)return;if(timer){clearInterval(timer);timer=null;paused=true;pause.textContent='再開';st.textContent='状態：一時停止中';}else{end=Date.now()+remain*1000;timer=setInterval(tick,250);paused=false;pause.textContent='一時停止';st.textContent='状態：動作中';}draw(remain);};
 reset.onclick=()=>{stopSounds();clearInterval(timer);timer=null;paused=false;pause.textContent='一時停止';remain=(+m.value*60)+(+sec.value);st.textContent='状態：停止中';last.clear();draw(remain);wlOff();};
 m.onchange=sec.onchange=()=>{if(!timer&&!paused){remain=(+m.value*60)+(+sec.value);draw(remain);}};
