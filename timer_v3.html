@@ -1,0 +1,755 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<title>撮影用タイマー Ver3</title>
+
+<style>
+body{
+    background:#111;
+    color:#fff;
+    font-family:-apple-system,BlinkMacSystemFont,sans-serif;
+    margin:0;
+    padding:15px;
+}
+
+.container{
+    max-width:1000px;
+    margin:auto;
+}
+
+.sectionTitle{
+    font-size:1.3rem;
+    font-weight:bold;
+    margin:18px 0 8px;
+}
+
+select,input{
+    background:#222;
+    color:#fff;
+    border:1px solid #555;
+    border-radius:8px;
+    padding:8px;
+    font-size:18px;
+}
+
+button{
+    font-size:18px;
+    padding:12px 16px;
+    margin:5px;
+    border:none;
+    border-radius:8px;
+}
+
+.mainTimer{
+    text-align:center;
+    font-size:90px;
+    font-weight:bold;
+    color:#fff;
+    margin-top:15px;
+}
+
+.mainTimer.running{
+    color:#ffd400;
+}
+
+.mainTimer.paused{
+    color:orange;
+}
+
+.elapsed,.clock{
+    text-align:center;
+}
+
+.elapsed{
+    font-size:30px;
+    color:#aaa;
+}
+
+.clock{
+    font-size:24px;
+    margin-bottom:15px;
+}
+
+.controls{
+    text-align:center;
+    margin:20px 0;
+}
+
+.notifyHeader{
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    flex-wrap:wrap;
+}
+
+.notifyGrid{
+    display:grid;
+    grid-template-columns:repeat(auto-fill,minmax(140px,1fr));
+    gap:10px;
+}
+
+.notifyGrid input{
+    width:100%;
+    box-sizing:border-box;
+}
+
+.done{
+    color:#55ff55;
+}
+
+.nextNotify{
+    color:#ffd400;
+}
+
+@media(max-width:700px){
+
+    .mainTimer{
+        font-size:60px;
+    }
+
+    .elapsed{
+        font-size:22px;
+    }
+
+    .clock{
+        font-size:20px;
+    }
+}
+</style>
+</head>
+
+<body>
+
+<div class="container">
+
+<div class="sectionTitle">
+設定時間（HH:MM:SS）
+</div>
+
+<div>
+<select id="setHour"></select>
+<select id="setMin"></select>
+<select id="setSec"></select>
+</div>
+
+<div class="notifyHeader">
+
+<div class="sectionTitle">
+通知時刻（残り時間）
+</div>
+
+<button onclick="resetNotifications()">
+通知リセット
+</button>
+
+</div>
+
+<div class="notifyGrid" id="notifyGrid"></div>
+
+<div class="controls">
+
+<button onclick="startTimer()">
+スタート
+</button>
+
+<button id="pauseBtn" onclick="togglePause()">
+一時停止
+</button>
+
+<button onclick="stopTimer()">
+停止
+</button>
+
+<button onclick="resetTimer()">
+リセット
+</button>
+
+</div>
+
+<div class="mainTimer" id="remaining">
+00:50:00
+</div>
+
+<div class="elapsed" id="elapsed">
+経過 00:00:00
+</div>
+
+<div class="clock" id="clock">
+現在時刻 --:--:--
+</div>
+
+<h3>通知予定</h3>
+
+<div id="schedule"></div>
+
+</div>
+
+<script>
+
+for(let i=0;i<24;i++){
+    setHour.add(
+        new Option(
+            String(i).padStart(2,'0')+'時間',
+            i
+        )
+    );
+}
+
+for(let i=0;i<60;i++){
+
+    setMin.add(
+        new Option(
+            String(i).padStart(2,'0')+'分',
+            i
+        )
+    );
+
+    setSec.add(
+        new Option(
+            String(i).padStart(2,'0')+'秒',
+            i
+        )
+    );
+}
+
+setMin.value=50;
+
+const grid=document.getElementById('notifyGrid');
+
+for(let i=0;i<20;i++){
+
+    let inp=document.createElement('input');
+
+    inp.id='notify'+i;
+
+    inp.value='00:00:00';
+
+    inp.placeholder='00:05:00';
+
+    inp.onchange=saveSettings;
+
+    grid.appendChild(inp);
+}
+
+let timer=null;
+let endTime=0;
+let totalSec=0;
+let pauseRemain=0;
+let paused=false;
+
+let notified=new Set();
+
+let audioCtx=null;
+
+let wakeLock=null;
+
+let startAudio=null;
+let finishAudio=null;
+
+let finished=false;
+
+function formatTime(sec){
+
+    sec=Math.max(0,Math.floor(sec));
+
+    return [
+        Math.floor(sec/3600),
+        Math.floor(sec%3600/60),
+        sec%60
+
+    ].map(v=>String(v).padStart(2,'0')).join(':');
+}
+
+
+function parseTime(str){
+
+    const p=str.split(':').map(Number);
+
+    if(p.length!==3 || p.some(isNaN)){
+        return 0;
+    }
+
+    return p[0]*3600+p[1]*60+p[2];
+}
+
+
+function getTotalSeconds(){
+
+    return (
+        (+setHour.value)*3600 +
+        (+setMin.value)*60 +
+        (+setSec.value)
+    );
+}
+
+
+function setTimerState(state){
+
+    remaining.className='mainTimer '+state;
+}
+
+
+async function requestWakeLock(){
+
+    try{
+
+        if('wakeLock' in navigator){
+
+            wakeLock=
+                await navigator.wakeLock.request('screen');
+        }
+
+    }catch(e){
+        console.log(e);
+    }
+}
+
+
+async function releaseWakeLock(){
+
+    try{
+
+        if(wakeLock){
+
+            await wakeLock.release();
+
+            wakeLock=null;
+        }
+
+    }catch(e){
+        console.log(e);
+    }
+}
+
+
+function unlockAudio(){
+
+    if(!audioCtx){
+
+        audioCtx=
+            new(window.AudioContext ||
+            window.webkitAudioContext)();
+    }
+
+    audioCtx.resume();
+
+    startAudio=
+        new Audio('SE1_kit_timer_beep.mp3');
+
+    finishAudio=
+        new Audio('SE2_kitchen_timer.mp3');
+
+    startAudio.preload='auto';
+    finishAudio.preload='auto';
+
+    startAudio.load();
+    finishAudio.load();
+}
+
+
+function stopFinishAudio(){
+
+    if(finishAudio){
+
+        finishAudio.pause();
+
+        finishAudio.currentTime=0;
+    }
+}
+
+
+function startTimer(){
+
+    stopFinishAudio();
+
+    stopTimer(false);
+
+    unlockAudio();
+
+    totalSec=getTotalSeconds();
+
+    if(totalSec<=0){
+        return;
+    }
+
+    notified.clear();
+
+    finished=false;
+
+    paused=false;
+
+    pauseBtn.textContent='一時停止';
+
+    startAudio.play().catch(()=>{});
+
+    endTime=
+        Date.now()+
+        totalSec*1000;
+
+    timer=setInterval(tick,100);
+
+    requestWakeLock();
+
+    setTimerState('running');
+
+    updateSchedule();
+}
+
+
+function tick(){
+
+    const remain=
+        (endTime-Date.now())/1000;
+
+    const elapsed=
+        totalSec-remain;
+
+    remaining.textContent=
+        formatTime(remain);
+
+    elapsedEl.textContent=
+        '経過 '+formatTime(elapsed);
+
+
+    for(let i=0;i<20;i++){
+
+        const n=parseTime(
+            document.getElementById(
+                'notify'+i
+            ).value
+        );
+
+        if(n===0){
+            continue;
+        }
+
+        if(
+            !notified.has(i) &&
+            remain<=n
+        ){
+
+            playNotificationBeep();
+
+            notified.add(i);
+
+            updateSchedule();
+        }
+    }
+
+
+    if(
+        !finished &&
+        remain<=0.15
+    ){
+
+        finished=true;
+
+        finishTimer();
+    }
+}
+
+
+function togglePause(){
+
+    stopFinishAudio();
+
+    if(timer && !paused){
+
+        pauseRemain=
+            (endTime-Date.now())/1000;
+
+        clearInterval(timer);
+
+        timer=null;
+
+        paused=true;
+
+        pauseBtn.textContent='再開';
+
+        setTimerState('paused');
+    }
+
+    else if(paused){
+
+        endTime=
+            Date.now()+
+            pauseRemain*1000;
+
+        timer=setInterval(tick,100);
+
+        paused=false;
+
+        pauseBtn.textContent='一時停止';
+
+        setTimerState('running');
+    }
+}
+
+function stopTimer(resetView=true){
+
+    stopFinishAudio();
+
+    clearInterval(timer);
+
+    timer=null;
+
+    paused=false;
+
+    pauseBtn.textContent='一時停止';
+
+    setTimerState('');
+
+    releaseWakeLock();
+
+    if(resetView){
+
+        remaining.textContent=
+            formatTime(getTotalSeconds());
+
+        elapsedEl.textContent=
+            '経過 00:00:00';
+    }
+}
+
+
+function resetTimer(){
+
+    stopTimer();
+
+    notified.clear();
+
+    updateSchedule();
+}
+
+
+function finishTimer(){
+
+    clearInterval(timer);
+
+    timer=null;
+
+    remaining.textContent='00:00:00';
+
+    setTimerState('');
+
+    releaseWakeLock();
+
+    if(finishAudio){
+
+        finishAudio.currentTime=0;
+
+        finishAudio.play().catch(()=>{});
+    }
+}
+
+
+function playNotificationBeep(){
+
+    if(!audioCtx){
+        return;
+    }
+
+    for(let i=0;i<3;i++){
+
+        let osc=
+            audioCtx.createOscillator();
+
+        let gain=
+            audioCtx.createGain();
+
+        osc.frequency.value=1000;
+
+        osc.connect(gain);
+
+        gain.connect(
+            audioCtx.destination
+        );
+
+        let t=
+            audioCtx.currentTime+i*0.25;
+
+        gain.gain.setValueAtTime(
+            0.3,
+            t
+        );
+
+        gain.gain.exponentialRampToValueAtTime(
+            0.001,
+            t+0.15
+        );
+
+        osc.start(t);
+
+        osc.stop(t+0.15);
+    }
+}
+
+
+function resetNotifications(){
+
+    for(let i=0;i<20;i++){
+
+        document.getElementById(
+            'notify'+i
+        ).value='00:00:00';
+    }
+
+    saveSettings();
+}
+
+
+function updateSchedule(){
+
+    let html='';
+
+    let next=false;
+
+    for(let i=0;i<20;i++){
+
+        const v=
+            document.getElementById(
+                'notify'+i
+            ).value;
+
+        if(v==='00:00:00'){
+            continue;
+        }
+
+        let cls='';
+
+        let mark='□';
+
+        if(notified.has(i)){
+
+            cls='done';
+
+            mark='✓';
+        }
+
+        else if(!next){
+
+            cls='nextNotify';
+
+            mark='▶';
+
+            next=true;
+        }
+
+        html+=
+            `<div class="${cls}">
+            ${mark} ${v}
+            </div>`;
+    }
+
+    schedule.innerHTML=html;
+}
+
+
+function saveSettings(){
+
+    localStorage.setItem(
+        'photoTimerV3',
+
+        JSON.stringify({
+
+            h:setHour.value,
+
+            m:setMin.value,
+
+            s:setSec.value,
+
+            notify:
+                [...Array(20)].map(
+                    (_,i)=>
+                    document.getElementById(
+                        'notify'+i
+                    ).value
+                )
+        })
+    );
+
+    updateSchedule();
+}
+
+
+function loadSettings(){
+
+    const d=
+        JSON.parse(
+            localStorage.getItem(
+                'photoTimerV3'
+            ) || '{}'
+        );
+
+    if(d.h!==undefined){
+
+        setHour.value=d.h;
+
+        setMin.value=d.m;
+
+        setSec.value=d.s;
+    }
+
+    (d.notify || []).forEach(
+
+        (v,i)=>{
+
+            if(grid.children[i]){
+
+                grid.children[i].value=v;
+            }
+        }
+    );
+
+    remaining.textContent=
+        formatTime(
+            getTotalSeconds()
+        );
+
+    updateSchedule();
+}
+
+
+const elapsedEl=
+    document.getElementById(
+        'elapsed'
+    );
+
+
+[setHour,setMin,setSec].forEach(
+
+    el=>{
+
+        el.onchange=()=>{
+
+            saveSettings();
+
+            remaining.textContent=
+                formatTime(
+                    getTotalSeconds()
+                );
+        };
+    }
+);
+
+
+setInterval(()=>{
+
+    clock.textContent=
+        '現在時刻 '+
+        new Date().toLocaleTimeString(
+            'ja-JP'
+        );
+
+},1000);
+
+
+loadSettings();
+
+</script>
+
+</body>
+</html>
